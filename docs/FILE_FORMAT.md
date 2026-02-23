@@ -11,7 +11,7 @@ Your notes are normal `.txt` files.
 
 For `idea.txt`, style metadata goes to:
 
-- `idea.txt.dopedpad.json`
+- `idea.txt.dopepad.json`
 
 Example:
 

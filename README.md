@@ -13,15 +13,15 @@
 
 # DopePad
 
-DopePad is a terminal notepad that i developed for myself for quick notes, todo dumps, random ideas, and all that "I need this saved right now" stuff.
+DopePad is a terminal notepad for quick notes, todo dumps, random ideas, and all that "I need this saved right now" stuff.
 
 It is fast, keyboard-first, and intentionally simple.
 
 ## Why it exists
 
-- I just wanted plain `.txt` files, no weird format lock-in.
-- Categories and file browsing without leaving the terminal.
-- Some color while writing, but without polluting the text file.
+- plain `.txt` files, no weird format lock-in.
+- categories and file browsing without leaving the terminal.
+- some color while writing, but without polluting the text file.
 
 ## What you get
 
@@ -37,26 +37,44 @@ It is fast, keyboard-first, and intentionally simple.
 ./scripts/install-path.sh
 ```
 
-Or the direct way:
+What it does:
+
+- installs `dopepad`
+- links it into `~/.local/bin`
+- detects your shell profile and injects PATH setup (`bash`, `zsh`, `fish`)
+
+Then just run:
 
 ```bash
-cargo install --path .
+dopepad
+```
+
+## Uninstall
+
+```bash
+./scripts/uninstall.sh
+```
+
+Optional full cleanup (including user notes data):
+
+```bash
+./scripts/uninstall.sh --purge-data
 ```
 
 ## Run
 
 ```bash
-dopedpad
-dopedpad notes.txt
-dopedpad --readonly notes.txt
-dopedpad --no-style notes.txt
+dopepad
+dopepad notes.txt
+dopepad --readonly notes.txt
+dopepad --no-style notes.txt
 ```
 
 ## Notes storage
 
 Everything lives under:
 
-- `~/.local/share/dopedpad/notes/`
+- `~/.local/share/dopepad/notes/`
 
 Fresh install is clean. No default categories.
 

@@ -92,7 +92,7 @@ pub fn sidecar_path_for(path: &Path) -> PathBuf {
         .file_name()
         .map(|s| s.to_os_string())
         .unwrap_or_else(|| OsString::from("untitled.txt"));
-    file_name.push(".dopedpad.json");
+    file_name.push(".dopepad.json");
     out.set_file_name(file_name);
     out
 }

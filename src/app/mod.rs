@@ -1165,7 +1165,7 @@ fn default_notes_root() -> Result<PathBuf> {
     Ok(PathBuf::from(home)
         .join(".local")
         .join("share")
-        .join("dopedpad")
+        .join("dopepad")
         .join("notes"))
 }
 

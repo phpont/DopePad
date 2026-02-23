@@ -16,7 +16,7 @@ Rule of thumb: `app` coordinates, `core` stays clean and terminal-agnostic.
 
 Tree is generated from folders/files under:
 
-- `~/.local/share/dopedpad/notes/`
+- `~/.local/share/dopepad/notes/`
 
 No hardcoded categories.
 
