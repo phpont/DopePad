@@ -5,6 +5,9 @@ APP_NAME="dopepad"
 BIN_DIR="${HOME}/.local/bin"
 LINK_PATH="${BIN_DIR}/${APP_NAME}"
 CARGO_BIN="${HOME}/.cargo/bin/${APP_NAME}"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+APPS_DIR="${DATA_HOME}/applications"
+DESKTOP_DST="${APPS_DIR}/io.github.phpont.DopePad.desktop"
 PATH_BLOCK_START="# >>> dopepad path >>>"
 PATH_BLOCK_END="# <<< dopepad path <<<"
 REMOVE_DATA=0
@@ -31,12 +34,11 @@ remove_path_block() {
 
 main() {
   rm -f "$LINK_PATH"
+  rm -f "$DESKTOP_DST"
 
   if command -v cargo >/dev/null 2>&1; then
     cargo uninstall "$APP_NAME" >/dev/null 2>&1 || true
   fi
-
-  # Fallback in case cargo uninstall could not run.
   rm -f "$CARGO_BIN"
 
   remove_path_block "${HOME}/.bashrc"
@@ -45,12 +47,16 @@ main() {
   remove_path_block "${HOME}/.zprofile"
   remove_path_block "${HOME}/.config/fish/config.fish"
 
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
+  fi
+
   if [[ "$REMOVE_DATA" -eq 1 ]]; then
-    rm -rf "${HOME}/.local/share/dopepad"
+    rm -rf "${DATA_HOME}/dopepad"
     echo "DopePad uninstalled and data removed."
   else
     echo "DopePad uninstalled."
-    echo "User data kept at: ${HOME}/.local/share/dopepad"
+    echo "User data kept at: ${DATA_HOME}/dopepad"
   fi
 
   echo "Restart your shell or open a new terminal session."

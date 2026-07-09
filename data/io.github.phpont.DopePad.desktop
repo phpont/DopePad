@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=DopePad
+GenericName=Notes
+Comment=Fast minimalist notes with inline DopeSyntax preview
+Exec=dopepad %F
+Icon=accessories-text-editor
+Terminal=false
+Categories=Office;TextEditor;Utility;
+Keywords=notes;markdown;daily;dopepad;text;
+StartupWMClass=io.github.phpont.DopePad
+MimeType=text/markdown;text/plain;text/x-markdown;
+Actions=Daily;New;
+
+[Desktop Action Daily]
+Name=Open daily note
+Exec=dopepad --daily
+
+[Desktop Action New]
+Name=New note
+Exec=dopepad --new

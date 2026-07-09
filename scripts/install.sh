@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="dopepad"
 BIN_DIR="${HOME}/.local/bin"
 CARGO_BIN="${HOME}/.cargo/bin/${APP_NAME}"
 LINK_PATH="${BIN_DIR}/${APP_NAME}"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+APPS_DIR="${DATA_HOME}/applications"
+DESKTOP_SRC="${ROOT}/data/io.github.phpont.DopePad.desktop"
+DESKTOP_DST="${APPS_DIR}/io.github.phpont.DopePad.desktop"
+NOTES_DIR="${DATA_HOME}/dopepad/notes"
 PATH_BLOCK_START="# >>> dopepad path >>>"
 PATH_BLOCK_END="# <<< dopepad path <<<"
 
@@ -71,15 +77,27 @@ pick_posix_profile() {
 }
 
 install_binary() {
-  cargo install --path .
+  echo "Building release binary…"
+  (cd "$ROOT" && cargo install --path . --force)
 
   mkdir -p "$BIN_DIR"
 
   if [[ -x "$CARGO_BIN" ]]; then
-    ln -sf "$CARGO_BIN" "$LINK_PATH"
+    ln -sfn "$CARGO_BIN" "$LINK_PATH"
   else
     echo "Error: ${CARGO_BIN} not found after install." >&2
     exit 1
+  fi
+}
+
+install_desktop() {
+  mkdir -p "$APPS_DIR"
+  if [[ -f "$DESKTOP_SRC" ]]; then
+    sed "s|^Exec=dopepad|Exec=${LINK_PATH}|" "$DESKTOP_SRC" >"$DESKTOP_DST"
+    echo "Desktop entry: ${DESKTOP_DST}"
+  fi
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
   fi
 }
 
@@ -102,16 +120,24 @@ configure_path() {
 
 main() {
   install_binary
+  install_desktop
+  mkdir -p "$NOTES_DIR"
   local profile
   profile="$(configure_path)"
 
-  # Make command available for the current shell session as well.
   export PATH="${HOME}/.local/bin:${PATH}"
 
+  echo ""
   echo "DopePad installed."
-  echo "Command: dopepad"
-  echo "PATH configured in: ${profile}"
-  echo "If your shell was already open, run: source ${profile}"
+  echo "  Command:  dopepad"
+  echo "  Notes:    ${NOTES_DIR}"
+  echo "  PATH:     ${profile}"
+  echo ""
+  echo "Niri binds (add manually to your config):"
+  echo "  Mod+Alt+N    dopepad --daily"
+  echo "  Mod+Shift+N  dopepad --new"
+  echo ""
+  echo "If your shell was already open: source ${profile}"
 }
 
 main "$@"
