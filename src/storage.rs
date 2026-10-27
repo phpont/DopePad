@@ -849,7 +849,7 @@ mod tests {
     fn metadata_roundtrip_preserves_legacy_note_body() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("note_legacy.dpad");
-        fs::write(&path, note_template(sample_dt()) + "Café e código\\n").unwrap();
+        fs::write(&path, note_template(sample_dt()) + "Café e código\n").unwrap();
 
         let before = load_note(&path).unwrap();
         assert_eq!(before.frontmatter.title, None);
@@ -877,7 +877,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("note_input.dpad");
         fs::write(&path, note_template(sample_dt())).unwrap();
-        assert!(rename_note(&path, "bad\\nnew line").is_err());
+        assert!(rename_note(&path, "bad\nnew line").is_err());
         assert!(rename_note(&path, &"x".repeat(121)).is_err());
         let unchanged = load_note(&path).unwrap();
         assert_eq!(unchanged.frontmatter.title, None);
