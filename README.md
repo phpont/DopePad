@@ -35,7 +35,8 @@ It is fast, keyboard-first, and intentionally simple.
 - `.dpad` files with light frontmatter (hidden while you write)
 - **DopeSyntax** inline styles — markers stay in the file
 - autosave
-- note picker (`Ctrl+P`) and find in note (`Ctrl+F`)
+- vault-wide full-text search (`Ctrl+P`) and find in note (`Ctrl+F`)
+- built-in note library (`Ctrl+B`), with pinning and renaming (`Ctrl+R`)
 - single-instance app + optional `--daemon` so hotkeys feel instant
 
 ## Install
@@ -106,10 +107,14 @@ On disk a managed note looks roughly like this (frontmatter is hidden in the UI)
 kind: daily
 created_at: 2026-07-09T00:00:00-03:00
 updated_at: 2026-07-09T00:00:00-03:00
+title: Example daily note
+pinned: true
 ---
 
 # Daily · 2026-07-09
 ```
+
+The optional `title` and `pinned` fields are backward compatible. Renaming a note does not rename its file or rewrite its body, including existing `#` headings. A blank title restores the generated label.
 
 Window titles:
 
@@ -167,7 +172,9 @@ Markers stay in the file. The editor just paints on top.
 | `Ctrl+S` | save now |
 | `Ctrl+N` | new note |
 | `Ctrl+D` | daily |
-| `Ctrl+P` | search notes in the vault |
+| `Ctrl+P` | search note titles and body contents in the vault |
+| `Ctrl+B` | toggle the saved-notes sidebar |
+| `Ctrl+R` | rename the current managed note |
 | `Ctrl+F` | find in this note |
 | `Esc` | close overlay / find |
 | `Ctrl+Q` | quit |
