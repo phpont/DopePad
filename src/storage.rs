@@ -36,6 +36,8 @@ pub struct Frontmatter {
     pub kind: NoteKind,
     pub created_at: DateTime<FixedOffset>,
     pub updated_at: DateTime<FixedOffset>,
+    pub title: Option<String>,
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +87,8 @@ fn synthetic_frontmatter(path: &Path) -> Frontmatter {
         kind: guess_kind_from_path(path),
         created_at: dt,
         updated_at: dt,
+    title: None,
+    pinned: false,
     }
 }
 
@@ -94,6 +98,8 @@ fn synthetic_frontmatter_now(kind: NoteKind) -> Frontmatter {
         kind,
         created_at: now,
         updated_at: now,
+    title: None,
+    pinned: false,
     }
 }
 
@@ -109,8 +115,14 @@ pub fn serialize_document(fm: &Frontmatter, body: &str) -> String {
     let updated = format_timestamp(fm.updated_at);
     let body = body.trim_start_matches('\u{feff}');
     let body = body.strip_prefix('\n').unwrap_or(body);
+    let title = fm
+        .title
+        .as_ref()
+        .map(|title| format!("title: {title}\n"))
+        .unwrap_or_default();
+    let pinned = if fm.pinned { "pinned: true\n" } else { "" };
     format!(
-        "---\nkind: {}\ncreated_at: {created}\nupdated_at: {updated}\n---\n\n{body}",
+        "---\nkind: {}\ncreated_at: {created}\nupdated_at: {updated}\n{title}{pinned}---\n\n{body}",
         fm.kind.as_str()
     )
 }
@@ -120,6 +132,9 @@ pub struct NoteListItem {
     pub path: PathBuf,
     pub label: String,
     pub mtime: SystemTime,
+    pub pinned: bool,
+    pub preview: String,
+    pub search_content: String,
 }
 
 pub fn notes_dir() -> Result<PathBuf> {
@@ -174,7 +189,13 @@ pub fn window_title(kind: NoteKind, dt: DateTime<FixedOffset>) -> String {
 
 pub fn document_window_title(doc: &NoteDocument) -> String {
     match doc.mode {
-        DocumentMode::Managed => window_title(doc.frontmatter.kind, doc.frontmatter.created_at),
+        DocumentMode::Managed => {
+            if let Some(title) = &doc.frontmatter.title {
+                format!("DopePad · {title}")
+            } else {
+                window_title(doc.frontmatter.kind, doc.frontmatter.created_at)
+            }
+        }
         DocumentMode::Plain => {
             let name = doc
                 .path
@@ -219,6 +240,8 @@ pub fn parse_frontmatter(content: &str) -> Result<(Frontmatter, usize)> {
     let mut kind: Option<NoteKind> = None;
     let mut created_at: Option<DateTime<FixedOffset>> = None;
     let mut updated_at: Option<DateTime<FixedOffset>> = None;
+    let mut title: Option<String> = None;
+    let mut pinned = false;
     let mut closed = false;
 
     for line in lines {
@@ -241,6 +264,8 @@ pub fn parse_frontmatter(content: &str) -> Result<(Frontmatter, usize)> {
                         .or_else(|_| DateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%:z"))
                         .ok();
                 }
+                "title" if !value.is_empty() => title = Some(value.to_owned()),
+                "pinned" => pinned = value.eq_ignore_ascii_case("true"),
                 _ => {}
             }
         }
@@ -277,6 +302,8 @@ pub fn parse_frontmatter(content: &str) -> Result<(Frontmatter, usize)> {
             kind,
             created_at,
             updated_at,
+            title,
+            pinned,
         },
         offset,
     ))
@@ -335,6 +362,8 @@ pub fn open_or_create_daily() -> Result<NoteDocument> {
                 kind: NoteKind::Daily,
                 created_at: now,
                 updated_at: now,
+            title: None,
+            pinned: false,
             },
             content,
         })
@@ -376,6 +405,8 @@ pub fn create_new_note() -> Result<NoteDocument> {
             kind: NoteKind::Note,
             created_at: now,
             updated_at: now,
+        title: None,
+        pinned: false,
         },
         content,
     })
@@ -471,77 +502,70 @@ pub fn save_document(
     }
 }
 
+/// The vault is intentionally file-backed. Build the in-memory search index once
+/// when a picker or library is opened; filtering never reads files again.
 pub fn list_notes() -> Result<Vec<NoteListItem>> {
     let dir = ensure_notes_dir()?;
     let mut items = Vec::new();
-    let entries =
-        fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?;
-    for entry in entries.flatten() {
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some(NOTE_EXT) {
+        if path.extension().and_then(|ext| ext.to_str()) != Some(NOTE_EXT) {
             continue;
         }
         let mtime = entry
             .metadata()
-            .and_then(|m| m.modified())
+            .and_then(|meta| meta.modified())
             .unwrap_or(SystemTime::UNIX_EPOCH);
-        let label = match load_note_meta(&path) {
-            Ok((k, dt)) => list_label(k, dt),
-            Err(_) => {
-                let kind = guess_kind_from_path(&path);
-                let dt = system_time_to_local(mtime);
-                list_label(kind, dt)
-            }
-        };
-        items.push(NoteListItem { path, label, mtime });
+        let doc = load_note(&path)?;
+        let label = doc.frontmatter.title.clone().unwrap_or_else(|| {
+            list_label(doc.frontmatter.kind, doc.frontmatter.created_at)
+        });
+        let body = doc.body();
+        let preview = body
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with("# "))
+            .unwrap_or("")
+            .chars()
+            .take(120)
+            .collect();
+        items.push(NoteListItem {
+            path,
+            label,
+            mtime,
+            pinned: doc.frontmatter.pinned,
+            preview,
+            search_content: body.to_lowercase(),
+        });
     }
-    items.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    items.sort_by(|a, b| b.pinned.cmp(&a.pinned).then_with(|| b.mtime.cmp(&a.mtime)));
     Ok(items)
 }
 
-fn load_note_meta(path: &Path) -> Result<(NoteKind, DateTime<FixedOffset>)> {
-    let content = fs::read_to_string(path)?;
-    let (fm, _) = parse_frontmatter(&content)?;
-    let dt = match fm.kind {
-        NoteKind::Daily => fm.created_at,
-        NoteKind::Note => fm.created_at,
-    };
-    if let Some(from_name) = parse_datetime_from_filename(path) {
-        return Ok((fm.kind, from_name));
+/// File paths remain stable: renaming edits metadata, not the daily/unique note ID.
+pub fn rename_note(path: &Path, title: &str) -> Result<Frontmatter> {
+    let title = title.trim();
+    if title.contains(['\\n', '\\r']) || title.chars().count() > 120 {
+        bail!("title must be a single line of at most 120 characters");
     }
-    Ok((fm.kind, dt))
+    let doc = load_note(path)?;
+    if doc.mode != DocumentMode::Managed {
+        bail!("only managed notes can be renamed");
+    }
+    let mut fm = doc.frontmatter.clone();
+    fm.title = if title.is_empty() { None } else { Some(title.to_owned()) };
+    save_body(path, &fm, doc.body())
 }
 
-fn parse_datetime_from_filename(path: &Path) -> Option<DateTime<FixedOffset>> {
-    use chrono::TimeZone;
-
-    let name = path.file_stem()?.to_str()?;
-    if let Some(rest) = name.strip_prefix("daily_") {
-        let naive = chrono::NaiveDate::parse_from_str(rest, "%Y-%m-%d").ok()?;
-        let ndt = naive.and_hms_opt(0, 0, 0)?;
-        return Local
-            .from_local_datetime(&ndt)
-            .single()
-            .map(|d| d.fixed_offset());
+pub fn set_note_pinned(path: &Path, pinned: bool) -> Result<Frontmatter> {
+    let doc = load_note(path)?;
+    if doc.mode != DocumentMode::Managed {
+        bail!("only managed notes can be pinned");
     }
-    if let Some(rest) = name.strip_prefix("note_") {
-        let parts: Vec<&str> = rest.split('_').collect();
-        if parts.len() >= 2 {
-            let date = chrono::NaiveDate::parse_from_str(parts[0], "%Y-%m-%d").ok()?;
-            let t = parts[1];
-            if t.len() >= 6 {
-                let h: u32 = t[0..2].parse().ok()?;
-                let m: u32 = t[2..4].parse().ok()?;
-                let s: u32 = t[4..6].parse().ok()?;
-                let ndt = date.and_hms_opt(h, m, s)?;
-                return Local
-                    .from_local_datetime(&ndt)
-                    .single()
-                    .map(|d| d.fixed_offset());
-            }
-        }
-    }
-    None
+    let mut fm = doc.frontmatter.clone();
+    fm.pinned = pinned;
+    save_body(path, &fm, doc.body())
 }
 
 pub fn resolve_open(_daily: bool, new: bool, file: Option<&Path>) -> Result<NoteDocument> {
@@ -568,6 +592,8 @@ pub fn resolve_open(_daily: bool, new: bool, file: Option<&Path>) -> Result<Note
                     kind: NoteKind::Note,
                     created_at: now,
                     updated_at: now,
+                title: None,
+                pinned: false,
                 },
                 content,
             });
@@ -683,6 +709,8 @@ mod tests {
             kind: NoteKind::Note,
             created_at: dt,
             updated_at: dt,
+        title: None,
+        pinned: false,
         };
         let written = save_body(&path, &fm, "# Note · hi\n\nbody line\n").unwrap();
         let disk = fs::read_to_string(&path).unwrap();
@@ -740,6 +768,8 @@ mod tests {
             kind: NoteKind::Note,
             created_at: dt,
             updated_at: dt,
+        title: None,
+        pinned: false,
         };
         save_document(&path, DocumentMode::Managed, &fm, "# Hi\n").unwrap();
         let disk = fs::read_to_string(&path).unwrap();
