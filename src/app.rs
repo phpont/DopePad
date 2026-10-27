@@ -23,6 +23,9 @@ use std::time::Duration;
 const WEIGHT_BOLD: i32 = 700;
 const WEIGHT_SEMIBOLD: i32 = 600;
 
+type RefreshCallback = Rc<dyn Fn()>;
+type RefreshSlot = Rc<RefCell<Option<RefreshCallback>>>;
+
 const APP_ID: &str = "io.github.phpont.DopePad";
 const SYNTAX_DEBOUNCE_MS: u64 = 100;
 const AUTOSAVE_DEBOUNCE_MS: u64 = 600;
@@ -39,7 +42,7 @@ struct EditorHandle {
 thread_local! {
     static OPEN_NOTES: RefCell<HashMap<PathBuf, adw::ApplicationWindow>> =
         RefCell::new(HashMap::new());
-    static SPARE: RefCell<Option<EditorHandle>> = RefCell::new(None);
+    static SPARE: RefCell<Option<EditorHandle>> = const { RefCell::new(None) };
     static WARMING: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -584,7 +587,7 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
     };
 
     // Metadata actions and document switches refresh the open library.
-    let refresh_slot: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+    let refresh_slot: RefreshSlot = Rc::new(RefCell::new(None));
 
     let do_save = {
         let buffer = buffer.clone();
