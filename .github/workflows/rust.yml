@@ -2,7 +2,7 @@ name: Rust checks
 
 on:
   push:
-    branches: [main, feat/note-library-title-search]
+    branches: [main]
   pull_request:
 
 jobs:
