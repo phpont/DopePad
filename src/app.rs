@@ -105,6 +105,36 @@ pub fn run() -> glib::ExitCode {
     app.run()
 }
 
+fn reload_theme(app: &adw::Application) {
+    let palette = theme::reload_css();
+
+    for window in app.windows() {
+        let mut child = window.first_child();
+
+        while let Some(widget) = child {
+            let next = widget.next_sibling();
+            refresh_widget_theme(&widget, &palette);
+            child = next;
+        }
+    }
+}
+
+fn refresh_widget_theme(widget: &gtk::Widget, palette: &theme::Palette) {
+    if let Some(view) = widget.downcast_ref::<TextView>() {
+        let buffer = view.buffer();
+        let table = buffer.tag_table();
+        apply_tag_palette(&table, palette);
+    }
+
+    let mut child = widget.first_child();
+
+    while let Some(current) = child {
+        let next = current.next_sibling();
+        refresh_widget_theme(&current, palette);
+        child = next;
+    }
+}
+
 fn parse_launch_action(cmdline: &ApplicationCommandLine) -> LaunchAction {
     let args = cmdline.arguments();
     let cli = Cli::parse_from(args.iter());
@@ -119,6 +149,10 @@ fn handle_command_line(
     let action = parse_launch_action(cmdline);
 
     match action {
+        LaunchAction::ReloadTheme => {
+            reload_theme(app);
+            0
+        }
         LaunchAction::Daemon => {
             if hold_token.borrow().is_none() {
                 *hold_token.borrow_mut() = Some(app.hold());
@@ -938,73 +972,128 @@ fn install_tags(buffer: &TextBuffer) {
     add_tag(&table, "h1", |t| {
         t.set_weight(WEIGHT_BOLD);
         t.set_scale(1.55);
-        t.set_foreground(Some("#e8bcfb"));
         t.set_pixels_above_lines(10);
         t.set_pixels_below_lines(4);
     });
+
     add_tag(&table, "h2", |t| {
         t.set_weight(WEIGHT_BOLD);
         t.set_scale(1.30);
-        t.set_foreground(Some("#e8bcfb"));
         t.set_pixels_above_lines(8);
         t.set_pixels_below_lines(3);
     });
+
     add_tag(&table, "h3", |t| {
         t.set_weight(WEIGHT_SEMIBOLD);
         t.set_scale(1.12);
-        t.set_foreground(Some("#e8bcfb"));
         t.set_pixels_above_lines(6);
         t.set_pixels_below_lines(2);
     });
+
     add_tag(&table, "bullet", |t| {
-        t.set_foreground(Some("#fef7e7"));
         t.set_left_margin(12);
     });
+
     add_tag(&table, "task_pending", |t| {
-        t.set_foreground(Some("#e8bcfb"));
         t.set_left_margin(12);
     });
+
     add_tag(&table, "task_done", |t| {
-        t.set_foreground(Some("#8e0cc6"));
         t.set_strikethrough(true);
         t.set_left_margin(12);
     });
+
     add_tag(&table, "quote", |t| {
-        t.set_foreground(Some("#e8bcfb"));
         t.set_style(pango::Style::Italic);
         t.set_left_margin(16);
-        t.set_paragraph_background(Some("#300443"));
     });
+
     add_tag(&table, "callout", |t| {
-        t.set_foreground(Some("#e80e4f"));
         t.set_weight(WEIGHT_SEMIBOLD);
         t.set_left_margin(12);
-        t.set_paragraph_background(Some("#300443"));
     });
-    add_tag(&table, "highlight", |t| {
-        t.set_background(Some("#50066f"));
-        t.set_foreground(Some("#fef7e7"));
-    });
+
+    add_tag(&table, "highlight", |_| {});
+
     add_tag(&table, "bold", |t| {
         t.set_weight(WEIGHT_BOLD);
-        t.set_foreground(Some("#fef7e7"));
     });
+
     add_tag(&table, "code", |t| {
         t.set_family(Some("monospace"));
-        t.set_foreground(Some("#e8bcfb"));
-        t.set_background(Some("#300443"));
         t.set_scale(0.95);
     });
+
     add_tag(&table, "tag", |t| {
-        t.set_foreground(Some("#e8bcfb"));
         t.set_weight(WEIGHT_SEMIBOLD);
-        t.set_background(Some("#50066f"));
     });
+
     add_tag(&table, "frontmatter", |t| {
-        t.set_foreground(Some("#8e0cc6"));
         t.set_family(Some("monospace"));
         t.set_scale(0.85);
     });
+
+    let palette = theme::load_palette();
+    apply_tag_palette(&table, &palette);
+}
+
+fn apply_tag_palette(table: &gtk::TextTagTable, p: &theme::Palette) {
+    if let Some(t) = table.lookup("h1") {
+        t.set_foreground(Some(p.primary.as_str()));
+    }
+
+    if let Some(t) = table.lookup("h2") {
+        t.set_foreground(Some(p.primary.as_str()));
+    }
+
+    if let Some(t) = table.lookup("h3") {
+        t.set_foreground(Some(p.primary.as_str()));
+    }
+
+    if let Some(t) = table.lookup("bullet") {
+        t.set_foreground(Some(p.on_surface.as_str()));
+    }
+
+    if let Some(t) = table.lookup("task_pending") {
+        t.set_foreground(Some(p.on_surface_variant.as_str()));
+    }
+
+    if let Some(t) = table.lookup("task_done") {
+        t.set_foreground(Some(p.secondary.as_str()));
+    }
+
+    if let Some(t) = table.lookup("quote") {
+        t.set_foreground(Some(p.tertiary.as_str()));
+        t.set_paragraph_background(Some(p.surface_variant.as_str()));
+    }
+
+    if let Some(t) = table.lookup("callout") {
+        t.set_foreground(Some(p.error.as_str()));
+        t.set_paragraph_background(Some(p.surface_variant.as_str()));
+    }
+
+    if let Some(t) = table.lookup("highlight") {
+        t.set_background(Some(p.primary.as_str()));
+        t.set_foreground(Some(p.on_primary.as_str()));
+    }
+
+    if let Some(t) = table.lookup("bold") {
+        t.set_foreground(Some(p.on_surface.as_str()));
+    }
+
+    if let Some(t) = table.lookup("code") {
+        t.set_foreground(Some(p.on_surface_variant.as_str()));
+        t.set_background(Some(p.surface_variant.as_str()));
+    }
+
+    if let Some(t) = table.lookup("tag") {
+        t.set_foreground(Some(p.primary.as_str()));
+        t.set_background(Some(p.surface_variant.as_str()));
+    }
+
+    if let Some(t) = table.lookup("frontmatter") {
+        t.set_foreground(Some(p.tertiary.as_str()));
+    }
 }
 
 fn add_tag(table: &gtk::TextTagTable, name: &str, configure: impl FnOnce(&TextTag)) {

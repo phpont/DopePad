@@ -21,6 +21,10 @@ pub struct Cli {
     #[arg(long, conflicts_with_all = ["daily", "new"])]
     pub daemon: bool,
 
+    /// Reload the generated Noctalia palette.
+    #[arg(long)]
+    pub reload_theme: bool,
+
     /// Open a file (.dpad, .txt, .md, …).
     #[arg(value_name = "FILE")]
     pub file: Option<PathBuf>,
@@ -29,6 +33,7 @@ pub struct Cli {
 #[derive(Debug, Clone)]
 pub enum LaunchAction {
     Daemon,
+    ReloadTheme,
     Daily,
     New,
     File(PathBuf),
@@ -36,7 +41,9 @@ pub enum LaunchAction {
 
 impl LaunchAction {
     pub fn from_cli(cli: &Cli) -> Self {
-        if cli.daemon {
+        if cli.reload_theme {
+            LaunchAction::ReloadTheme
+        } else if cli.daemon {
             LaunchAction::Daemon
         } else if cli.new {
             LaunchAction::New
