@@ -656,8 +656,8 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
                 ),
                 false,
             );
-            if let Some(refresh) = refresh_slot.borrow().as_ref() {
-                refresh();
+            if let Some(refresh) = refresh_slot.borrow().as_ref().cloned() {
+                glib::idle_add_local_once(move || refresh());
             }
         })
     };
@@ -946,10 +946,25 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
         let close_library = Rc::clone(&close_library);
         move |_| close_library()
     });
-    search_entry.connect_changed({
-        let populate_search = Rc::clone(&populate_search);
-        move |_| populate_search()
-    });
+    {
+        let source: Rc<RefCell<Option<SourceId>>> = Rc::new(RefCell::new(None));
+        search_entry.connect_changed({
+            let populate_search = Rc::clone(&populate_search);
+            let source = Rc::clone(&source);
+            move |_| {
+                if let Some(id) = source.borrow_mut().take() {
+                    id.remove();
+                }
+                let populate_search = Rc::clone(&populate_search);
+                let source_for_timeout = Rc::clone(&source);
+                let id = glib::timeout_add_local_once(Duration::from_millis(90), move || {
+                    populate_search();
+                    source_for_timeout.borrow_mut().take();
+                });
+                *source.borrow_mut() = Some(id);
+            }
+        });
+    }
 
     for (list, paths, close_after_open) in [
         (search_list.clone(), Rc::clone(&note_paths), true),
@@ -1190,6 +1205,69 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
         window.present();
         text_view.grab_focus();
     }
+}
+
+/// Both search and the library use the same row rendering and path mapping.
+fn fill_note_list(
+    list: &gtk::ListBox,
+    paths: &Rc<RefCell<Vec<PathBuf>>>,
+    items: &[NoteListItem],
+    show_actions: bool,
+    on_pin: &Rc<dyn Fn(PathBuf)>,
+    on_rename: &Rc<dyn Fn(PathBuf)>,
+) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    paths.borrow_mut().clear();
+
+    for item in items {
+        let row = gtk::ListBoxRow::new();
+        let content = gtk::Box::new(Orientation::Vertical, 5);
+
+        let title = gtk::Label::new(Some(&item.label));
+        title.add_css_class("dopepad-note-title");
+        title.set_xalign(0.0);
+        title.set_ellipsize(pango::EllipsizeMode::End);
+        title.set_max_width_chars(32);
+        if item.pinned {
+            title.set_tooltip_text(Some("Pinned note"));
+        }
+        content.append(&title);
+        if !item.preview.is_empty() {
+            let preview = gtk::Label::new(Some(&item.preview));
+            preview.add_css_class("dopepad-note-preview");
+            preview.set_xalign(0.0);
+            preview.set_ellipsize(pango::EllipsizeMode::End);
+            preview.set_max_width_chars(38);
+            content.append(&preview);
+        }
+        if show_actions {
+            let actions = gtk::Box::new(Orientation::Horizontal, 6);
+            actions.add_css_class("dopepad-note-actions");
+            let pin = gtk::Button::with_label(if item.pinned { "Unpin" } else { "Pin" });
+            pin.add_css_class("flat");
+            pin.set_tooltip_text(Some("Toggle pin"));
+            let rename = gtk::Button::with_label("Rename");
+            rename.add_css_class("flat");
+            let pin_path = item.path.clone();
+            let rename_path = item.path.clone();
+            let on_pin = Rc::clone(on_pin);
+            let on_rename = Rc::clone(on_rename);
+            pin.connect_clicked(move |_| on_pin(pin_path.clone()));
+            rename.connect_clicked(move |_| on_rename(rename_path.clone()));
+            actions.append(&pin);
+            actions.append(&rename);
+            content.append(&actions);
+        }
+        row.set_child(Some(&content));
+        list.append(&row);
+        paths.borrow_mut().push(item.path.clone());
+    }
+}
+
+fn is_managed_path(path: &Path) -> bool {
+    storage::path_suggests_managed(path)
 }
 
 fn buffer_text(buffer: &TextBuffer) -> String {
