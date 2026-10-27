@@ -232,6 +232,48 @@ window.dopepad-window {{
   background-color: {hover};
 }}
 
+.dopepad-library {{
+  background-color: alpha({surface_variant}, 0.98);
+  color: {on_surface};
+  border-right: 1px solid alpha({outline}, 0.72);
+  box-shadow: 4px 0 22px alpha({shadow}, 0.35);
+}}
+
+.dopepad-library-header {{
+  padding: 14px 12px 10px 16px;
+  border-bottom: 1px solid alpha({outline}, 0.45);
+}}
+
+.dopepad-library-title,
+.dopepad-note-title {{
+  color: {on_surface};
+  font-weight: 600;
+}}
+
+.dopepad-note-preview {{
+  color: {on_surface_variant};
+  font-size: 0.88em;
+}}
+
+.dopepad-note-actions {{
+  font-size: 0.85em;
+}}
+
+.dopepad-note-actions button {{
+  color: {primary};
+  padding: 2px 8px;
+  min-height: 25px;
+  border-radius: 6px;
+}}
+
+.dopepad-note-actions button:hover {{
+  background-color: {hover};
+}}
+
+.dopepad-library .dopepad-search-list {{
+  background-color: transparent;
+}}
+
 .dopepad-hover-strip {{
   min-height: 8px;
   background-color: transparent;
