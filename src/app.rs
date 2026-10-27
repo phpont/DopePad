@@ -1,6 +1,6 @@
 //! GTK4 / libadwaita UI.
 
-use crate::storage::{self, document_window_title, NoteDocument, NoteKind};
+use crate::storage::{self, document_window_title, NoteDocument, NoteKind, NoteListItem};
 use crate::syntax;
 use crate::theme;
 use crate::{Cli, LaunchAction};
@@ -15,6 +15,7 @@ use gtk::{
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -232,6 +233,8 @@ fn warm_spare(app: &adw::Application) {
             kind: NoteKind::Note,
             created_at: now,
             updated_at: now,
+            title: None,
+            pinned: false,
         },
         content,
     };
@@ -299,15 +302,10 @@ fn load_into_handle(handle: &EditorHandle, doc: &NoteDocument) {
 }
 
 fn register_open_note(path: PathBuf, window: &adw::ApplicationWindow) {
-    OPEN_NOTES.with(|m| {
-        m.borrow_mut().insert(path.clone(), window.clone());
-    });
-    let path_for_close = path;
-    window.connect_close_request(move |_| {
-        OPEN_NOTES.with(|m| {
-            m.borrow_mut().remove(&path_for_close);
-        });
-        glib::Propagation::Proceed
+    OPEN_NOTES.with(|notes| {
+        let mut notes = notes.borrow_mut();
+        notes.retain(|_, current| current != window);
+        notes.insert(path, window.clone());
     });
 }
 
@@ -316,6 +314,15 @@ fn build_window(app: &adw::Application, doc: NoteDocument, as_spare: bool) {
     window.set_title(Some(&document_window_title(&doc)));
     window.set_default_size(820, 920);
     window.add_css_class("dopepad-window");
+
+    // The mapped path can change when the user navigates inside a window.
+    let closing_window = window.clone();
+    window.connect_close_request(move |_| {
+        OPEN_NOTES.with(|notes| {
+            notes.borrow_mut().retain(|_, current| current != &closing_window);
+        });
+        glib::Propagation::Proceed
+    });
 
     if !as_spare {
         register_open_note(doc.path.clone(), &window);
@@ -358,11 +365,17 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
     btn_search.set_tooltip_text(Some("Search notes (Ctrl+P)"));
     let btn_save = gtk::Button::with_label("Save");
     btn_save.set_tooltip_text(Some("Save (Ctrl+S)"));
+    let btn_library = gtk::Button::with_label("Notes");
+    btn_library.set_tooltip_text(Some("Browse saved notes (Ctrl+B)"));
+    let btn_rename = gtk::Button::with_label("Rename");
+    btn_rename.set_tooltip_text(Some("Rename current note (Ctrl+R)"));
 
     header.pack_start(&btn_daily);
     header.pack_start(&btn_new);
     header.pack_end(&btn_save);
+    header.pack_end(&btn_rename);
     header.pack_end(&btn_search);
+    header.pack_start(&btn_library);
 
     let find_bar = gtk::Box::new(Orientation::Horizontal, 8);
     find_bar.add_css_class("dopepad-find-bar");
@@ -410,6 +423,41 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
     clamp.add_css_class("dopepad-surface");
     clamp.set_vexpand(true);
 
+    let library = gtk::Box::new(Orientation::Vertical, 0);
+    library.add_css_class("dopepad-library");
+    library.set_size_request(286, -1);
+    library.set_vexpand(true);
+    let library_header = gtk::Box::new(Orientation::Horizontal, 8);
+    library_header.add_css_class("dopepad-library-header");
+    let library_title = gtk::Label::new(Some("Saved notes"));
+    library_title.set_hexpand(true);
+    library_title.set_xalign(0.0);
+    library_title.add_css_class("dopepad-library-title");
+    let library_close = gtk::Button::from_icon_name("window-close-symbolic");
+    library_close.set_tooltip_text(Some("Close notes (Esc)"));
+    library_close.add_css_class("flat");
+    library_header.append(&library_title);
+    library_header.append(&library_close);
+    let library_list = gtk::ListBox::new();
+    library_list.set_selection_mode(gtk::SelectionMode::Single);
+    library_list.add_css_class("dopepad-search-list");
+    let library_scroll = ScrolledWindow::new();
+    library_scroll.set_child(Some(&library_list));
+    library_scroll.set_vexpand(true);
+    library.append(&library_header);
+    library.append(&library_scroll);
+
+    let library_revealer = gtk::Revealer::new();
+    library_revealer.set_transition_type(gtk::RevealerTransitionType::SlideRight);
+    library_revealer.set_transition_duration(180);
+    library_revealer.set_halign(gtk::Align::Start);
+    library_revealer.set_valign(gtk::Align::Fill);
+    library_revealer.set_child(Some(&library));
+    library_revealer.set_reveal_child(false);
+    let editor_area = gtk::Overlay::new();
+    editor_area.set_child(Some(&clamp));
+    editor_area.add_overlay(&library_revealer);
+
     let status = gtk::Label::new(Some(""));
     status.set_xalign(0.0);
     status.add_css_class("dopepad-status");
@@ -450,7 +498,7 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
     toolbar_view.add_top_bar(&header);
     toolbar_view.add_top_bar(&find_bar);
     toolbar_view.add_top_bar(&hover_strip);
-    toolbar_view.set_content(Some(&clamp));
+    toolbar_view.set_content(Some(&editor_area));
     toolbar_view.add_bottom_bar(&status);
     toolbar_view.set_reveal_top_bars(false);
     toolbar_view.set_reveal_bottom_bars(false);
@@ -528,11 +576,14 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
         })
     };
 
+    // Metadata actions and document switches refresh the open library.
+    let refresh_slot: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+
     let do_save = {
         let buffer = buffer.clone();
         let state = Rc::clone(&state);
         let show_status = Rc::clone(&show_status);
-        Rc::new(move || {
+        Rc::new(move || -> bool {
             if let Some(id) = state.borrow().autosave_source.borrow_mut().take() {
                 id.remove();
             }
@@ -547,9 +598,11 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
                     state.borrow().dirty.set(false);
                     buffer.set_modified(false);
                     show_status("Saved", false);
+                    true
                 }
                 Err(e) => {
                     show_status(&format!("Save failed: {e}"), true);
+                    false
                 }
             }
         })
@@ -562,16 +615,22 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
         let title_label = title_label.clone();
         let show_status = Rc::clone(&show_status);
         let text_view = text_view.clone();
+        let do_save = Rc::clone(&do_save);
+        let refresh_slot = Rc::clone(&refresh_slot);
         Rc::new(move |doc: NoteDocument| {
-            if state.borrow().dirty.get() {
-                let body = buffer_text(&buffer);
-                let (path, mode, fm) = {
-                    let st = state.borrow();
-                    (st.path.clone(), st.mode, st.frontmatter.clone())
-                };
-                let _ = storage::save_document(&path, mode, &fm, &body);
+            if state.borrow().dirty.get() && !do_save() {
+                return;
             }
-            state.borrow().suppress_change.set(true);
+            {
+                let st = state.borrow();
+                if let Some(id) = st.autosave_source.borrow_mut().take() {
+                    id.remove();
+                }
+                if let Some(id) = st.syntax_source.borrow_mut().take() {
+                    id.remove();
+                }
+                st.suppress_change.set(true);
+            }
             {
                 let mut st = state.borrow_mut();
                 st.path = doc.path.clone();
@@ -585,20 +644,21 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
             buffer.set_modified(false);
             state.borrow().suppress_change.set(false);
 
-            let t = document_window_title(&doc);
-            window.set_title(Some(&t));
-            title_label.set_text(&t);
+            register_open_note(doc.path.clone(), &window);
+            let title = document_window_title(&doc);
+            window.set_title(Some(&title));
+            title_label.set_text(&title);
             text_view.grab_focus();
             show_status(
                 &format!(
                     "Opened {}",
-                    doc.path
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("note")
+                    doc.path.file_name().and_then(|name| name.to_str()).unwrap_or("note")
                 ),
                 false,
             );
+            if let Some(refresh) = refresh_slot.borrow().as_ref() {
+                refresh();
+            }
         })
     };
 
@@ -858,7 +918,7 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
     });
     btn_save.connect_clicked({
         let do_save = Rc::clone(&do_save);
-        move |_| do_save()
+        move |_| { do_save(); }
     });
     btn_search.connect_clicked({
         let open_search = Rc::clone(&open_search);
