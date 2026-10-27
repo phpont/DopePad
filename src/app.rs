@@ -355,6 +355,8 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
 
     let title_label = gtk::Label::new(Some(&window.title().unwrap_or_default()));
     title_label.add_css_class("dopepad-title");
+    title_label.set_ellipsize(pango::EllipsizeMode::End);
+    title_label.set_max_width_chars(26);
     header.set_title_widget(Some(&title_label));
 
     let btn_daily = gtk::Button::with_label("Daily");
@@ -464,12 +466,11 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
     status.set_visible(false);
 
     let search_overlay_box = gtk::Box::new(Orientation::Vertical, 0);
-    search_overlay_box.set_halign(gtk::Align::Center);
+    search_overlay_box.set_halign(gtk::Align::Fill);
     search_overlay_box.set_valign(gtk::Align::Start);
     search_overlay_box.set_hexpand(true);
     search_overlay_box.set_visible(false);
     search_overlay_box.add_css_class("dopepad-search-frame");
-    search_overlay_box.set_size_request(420, -1);
 
     let search_entry = gtk::Entry::new();
     search_entry.set_placeholder_text(Some("Search notes…"));
@@ -485,7 +486,7 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
         .max_content_height(360)
         .propagate_natural_height(true)
         .build();
-    search_scroll.set_size_request(400, 280);
+    search_scroll.set_size_request(-1, 280);
 
     search_overlay_box.append(&search_entry);
     search_overlay_box.append(&search_scroll);
@@ -503,11 +504,17 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
     toolbar_view.set_reveal_top_bars(false);
     toolbar_view.set_reveal_bottom_bars(false);
 
+    let search_clamp = adw::Clamp::new();
+    search_clamp.set_maximum_size(520);
+    search_clamp.set_child(Some(&search_overlay_box));
+    search_clamp.set_halign(gtk::Align::Fill);
+    search_clamp.set_valign(gtk::Align::Start);
+    search_clamp.set_hexpand(true);
+    search_clamp.set_visible(false);
+
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&toolbar_view));
-    overlay.add_overlay(&search_overlay_box);
-    search_overlay_box.set_halign(gtk::Align::Center);
-    search_overlay_box.set_valign(gtk::Align::Start);
+    overlay.add_overlay(&search_clamp);
     search_overlay_box.set_margin_top(48);
 
     window.set_content(Some(&overlay));
@@ -776,8 +783,8 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
                     }
                     show_status(if pinned { "Unpinned" } else { "Pinned" }, false);
                     if let Some(slot) = refresh_weak.upgrade() {
-                        if let Some(refresh) = slot.borrow().as_ref() {
-                            refresh();
+                        if let Some(refresh) = slot.borrow().as_ref().cloned() {
+                            glib::idle_add_local_once(move || refresh());
                         }
                     }
                 }
@@ -841,8 +848,8 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
                         }
                         show_status("Renamed", false);
                         if let Some(slot) = refresh_weak.upgrade() {
-                            if let Some(refresh) = slot.borrow().as_ref() {
-                                refresh();
+                            if let Some(refresh) = slot.borrow().as_ref().cloned() {
+                                glib::idle_add_local_once(move || refresh());
                             }
                         }
                     }
@@ -911,15 +918,18 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
 
     let close_search = {
         let search_overlay_box = search_overlay_box.clone();
+        let search_clamp = search_clamp.clone();
         let text_view = text_view.clone();
         Rc::new(move || {
             search_overlay_box.set_visible(false);
+            search_clamp.set_visible(false);
             text_view.grab_focus();
         })
     };
 
     let open_search = {
         let search_overlay_box = search_overlay_box.clone();
+        let search_clamp = search_clamp.clone();
         let search_entry = search_entry.clone();
         let refresh_index = Rc::clone(&refresh_index);
         let reveal_header = Rc::clone(&reveal_header);
@@ -927,6 +937,7 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
             reveal_header(true);
             refresh_index();
             search_overlay_box.set_visible(true);
+            search_clamp.set_visible(true);
             search_entry.grab_focus();
         })
     };
