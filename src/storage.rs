@@ -546,7 +546,7 @@ pub fn list_notes() -> Result<Vec<NoteListItem>> {
 /// File paths remain stable: renaming edits metadata, not the daily/unique note ID.
 pub fn rename_note(path: &Path, title: &str) -> Result<Frontmatter> {
     let title = title.trim();
-    if title.contains(['\\n', '\\r']) || title.chars().count() > 120 {
+    if title.contains(['\n', '\r']) || title.chars().count() > 120 {
         bail!("title must be a single line of at most 120 characters");
     }
     let doc = load_note(path)?;
