@@ -820,6 +820,7 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
             let state = Rc::clone(&state);
             let do_save = Rc::clone(&do_save);
             let window = window.clone();
+            let present_window = window.clone();
             let title_label = title_label.clone();
             let show_status = Rc::clone(&show_status);
             let refresh_weak = refresh_weak.clone();
@@ -848,7 +849,7 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
                     Err(error) => show_status(&format!("Rename failed: {error}"), true),
                 }
             });
-            dialog.present(Some(&window));
+            dialog.present(Some(&present_window));
         })
     };
 
