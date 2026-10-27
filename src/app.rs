@@ -867,7 +867,15 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
                         || item.label.to_lowercase().contains(&filter)
                         || item.search_content.contains(&filter)
                 })
-                .cloned()
+                .map(|item| {
+                    let mut result = item.clone();
+                    if !filter.is_empty() {
+                        if let Some(line) = item.body.lines().find(|line| line.to_lowercase().contains(&filter)) {
+                            result.preview = line.trim().chars().take(120).collect();
+                        }
+                    }
+                    result
+                })
                 .collect();
             fill_note_list(&search_list, &note_paths, &items, false, &on_pin, &on_rename);
         })
