@@ -1,6 +1,6 @@
 //! GTK4 / libadwaita UI.
 
-use crate::storage::{self, document_window_title, NoteDocument, NoteKind};
+use crate::storage::{self, document_window_title, NoteDocument, NoteKind, NoteListItem};
 use crate::syntax;
 use crate::theme;
 use crate::{Cli, LaunchAction};
@@ -15,12 +15,16 @@ use gtk::{
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
 const WEIGHT_BOLD: i32 = 700;
 const WEIGHT_SEMIBOLD: i32 = 600;
+
+type RefreshCallback = Rc<dyn Fn()>;
+type RefreshSlot = Rc<RefCell<Option<RefreshCallback>>>;
 
 const APP_ID: &str = "io.github.phpont.DopePad";
 const SYNTAX_DEBOUNCE_MS: u64 = 100;
@@ -38,7 +42,7 @@ struct EditorHandle {
 thread_local! {
     static OPEN_NOTES: RefCell<HashMap<PathBuf, adw::ApplicationWindow>> =
         RefCell::new(HashMap::new());
-    static SPARE: RefCell<Option<EditorHandle>> = RefCell::new(None);
+    static SPARE: RefCell<Option<EditorHandle>> = const { RefCell::new(None) };
     static WARMING: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -232,6 +236,8 @@ fn warm_spare(app: &adw::Application) {
             kind: NoteKind::Note,
             created_at: now,
             updated_at: now,
+            title: None,
+            pinned: false,
         },
         content,
     };
@@ -299,15 +305,10 @@ fn load_into_handle(handle: &EditorHandle, doc: &NoteDocument) {
 }
 
 fn register_open_note(path: PathBuf, window: &adw::ApplicationWindow) {
-    OPEN_NOTES.with(|m| {
-        m.borrow_mut().insert(path.clone(), window.clone());
-    });
-    let path_for_close = path;
-    window.connect_close_request(move |_| {
-        OPEN_NOTES.with(|m| {
-            m.borrow_mut().remove(&path_for_close);
-        });
-        glib::Propagation::Proceed
+    OPEN_NOTES.with(|notes| {
+        let mut notes = notes.borrow_mut();
+        notes.retain(|_, current| current != window);
+        notes.insert(path, window.clone());
     });
 }
 
@@ -316,6 +317,15 @@ fn build_window(app: &adw::Application, doc: NoteDocument, as_spare: bool) {
     window.set_title(Some(&document_window_title(&doc)));
     window.set_default_size(820, 920);
     window.add_css_class("dopepad-window");
+
+    // The mapped path can change when the user navigates inside a window.
+    let closing_window = window.clone();
+    window.connect_close_request(move |_| {
+        OPEN_NOTES.with(|notes| {
+            notes.borrow_mut().retain(|_, current| current != &closing_window);
+        });
+        glib::Propagation::Proceed
+    });
 
     if !as_spare {
         register_open_note(doc.path.clone(), &window);
@@ -348,6 +358,8 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
 
     let title_label = gtk::Label::new(Some(&window.title().unwrap_or_default()));
     title_label.add_css_class("dopepad-title");
+    title_label.set_ellipsize(pango::EllipsizeMode::End);
+    title_label.set_max_width_chars(26);
     header.set_title_widget(Some(&title_label));
 
     let btn_daily = gtk::Button::with_label("Daily");
@@ -358,11 +370,17 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
     btn_search.set_tooltip_text(Some("Search notes (Ctrl+P)"));
     let btn_save = gtk::Button::with_label("Save");
     btn_save.set_tooltip_text(Some("Save (Ctrl+S)"));
+    let btn_library = gtk::Button::with_label("Notes");
+    btn_library.set_tooltip_text(Some("Browse saved notes (Ctrl+B)"));
+    let btn_rename = gtk::Button::with_label("Rename");
+    btn_rename.set_tooltip_text(Some("Rename current note (Ctrl+R)"));
 
     header.pack_start(&btn_daily);
     header.pack_start(&btn_new);
     header.pack_end(&btn_save);
+    header.pack_end(&btn_rename);
     header.pack_end(&btn_search);
+    header.pack_start(&btn_library);
 
     let find_bar = gtk::Box::new(Orientation::Horizontal, 8);
     find_bar.add_css_class("dopepad-find-bar");
@@ -410,18 +428,52 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
     clamp.add_css_class("dopepad-surface");
     clamp.set_vexpand(true);
 
+    let library = gtk::Box::new(Orientation::Vertical, 0);
+    library.add_css_class("dopepad-library");
+    library.set_size_request(286, -1);
+    library.set_vexpand(true);
+    let library_header = gtk::Box::new(Orientation::Horizontal, 8);
+    library_header.add_css_class("dopepad-library-header");
+    let library_title = gtk::Label::new(Some("Saved notes"));
+    library_title.set_hexpand(true);
+    library_title.set_xalign(0.0);
+    library_title.add_css_class("dopepad-library-title");
+    let library_close = gtk::Button::from_icon_name("window-close-symbolic");
+    library_close.set_tooltip_text(Some("Close notes (Esc)"));
+    library_close.add_css_class("flat");
+    library_header.append(&library_title);
+    library_header.append(&library_close);
+    let library_list = gtk::ListBox::new();
+    library_list.set_selection_mode(gtk::SelectionMode::Single);
+    library_list.add_css_class("dopepad-search-list");
+    let library_scroll = ScrolledWindow::new();
+    library_scroll.set_child(Some(&library_list));
+    library_scroll.set_vexpand(true);
+    library.append(&library_header);
+    library.append(&library_scroll);
+
+    let library_revealer = gtk::Revealer::new();
+    library_revealer.set_transition_type(gtk::RevealerTransitionType::SlideRight);
+    library_revealer.set_transition_duration(180);
+    library_revealer.set_halign(gtk::Align::Start);
+    library_revealer.set_valign(gtk::Align::Fill);
+    library_revealer.set_child(Some(&library));
+    library_revealer.set_reveal_child(false);
+    let editor_area = gtk::Overlay::new();
+    editor_area.set_child(Some(&clamp));
+    editor_area.add_overlay(&library_revealer);
+
     let status = gtk::Label::new(Some(""));
     status.set_xalign(0.0);
     status.add_css_class("dopepad-status");
     status.set_visible(false);
 
     let search_overlay_box = gtk::Box::new(Orientation::Vertical, 0);
-    search_overlay_box.set_halign(gtk::Align::Center);
+    search_overlay_box.set_halign(gtk::Align::Fill);
     search_overlay_box.set_valign(gtk::Align::Start);
     search_overlay_box.set_hexpand(true);
     search_overlay_box.set_visible(false);
     search_overlay_box.add_css_class("dopepad-search-frame");
-    search_overlay_box.set_size_request(420, -1);
 
     let search_entry = gtk::Entry::new();
     search_entry.set_placeholder_text(Some("Search notes…"));
@@ -437,7 +489,7 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
         .max_content_height(360)
         .propagate_natural_height(true)
         .build();
-    search_scroll.set_size_request(400, 280);
+    search_scroll.set_size_request(-1, 280);
 
     search_overlay_box.append(&search_entry);
     search_overlay_box.append(&search_scroll);
@@ -450,16 +502,22 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
     toolbar_view.add_top_bar(&header);
     toolbar_view.add_top_bar(&find_bar);
     toolbar_view.add_top_bar(&hover_strip);
-    toolbar_view.set_content(Some(&clamp));
+    toolbar_view.set_content(Some(&editor_area));
     toolbar_view.add_bottom_bar(&status);
     toolbar_view.set_reveal_top_bars(false);
     toolbar_view.set_reveal_bottom_bars(false);
 
+    let search_clamp = adw::Clamp::new();
+    search_clamp.set_maximum_size(520);
+    search_clamp.set_child(Some(&search_overlay_box));
+    search_clamp.set_halign(gtk::Align::Fill);
+    search_clamp.set_valign(gtk::Align::Start);
+    search_clamp.set_hexpand(true);
+    search_clamp.set_visible(false);
+
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&toolbar_view));
-    overlay.add_overlay(&search_overlay_box);
-    search_overlay_box.set_halign(gtk::Align::Center);
-    search_overlay_box.set_valign(gtk::Align::Start);
+    overlay.add_overlay(&search_clamp);
     search_overlay_box.set_margin_top(48);
 
     window.set_content(Some(&overlay));
@@ -528,11 +586,14 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
         })
     };
 
+    // Metadata actions and document switches refresh the open library.
+    let refresh_slot: RefreshSlot = Rc::new(RefCell::new(None));
+
     let do_save = {
         let buffer = buffer.clone();
         let state = Rc::clone(&state);
         let show_status = Rc::clone(&show_status);
-        Rc::new(move || {
+        Rc::new(move || -> bool {
             if let Some(id) = state.borrow().autosave_source.borrow_mut().take() {
                 id.remove();
             }
@@ -547,9 +608,11 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
                     state.borrow().dirty.set(false);
                     buffer.set_modified(false);
                     show_status("Saved", false);
+                    true
                 }
                 Err(e) => {
                     show_status(&format!("Save failed: {e}"), true);
+                    false
                 }
             }
         })
@@ -562,16 +625,22 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
         let title_label = title_label.clone();
         let show_status = Rc::clone(&show_status);
         let text_view = text_view.clone();
+        let do_save = Rc::clone(&do_save);
+        let refresh_slot = Rc::clone(&refresh_slot);
         Rc::new(move |doc: NoteDocument| {
-            if state.borrow().dirty.get() {
-                let body = buffer_text(&buffer);
-                let (path, mode, fm) = {
-                    let st = state.borrow();
-                    (st.path.clone(), st.mode, st.frontmatter.clone())
-                };
-                let _ = storage::save_document(&path, mode, &fm, &body);
+            if state.borrow().dirty.get() && !do_save() {
+                return;
             }
-            state.borrow().suppress_change.set(true);
+            {
+                let st = state.borrow();
+                if let Some(id) = st.autosave_source.borrow_mut().take() {
+                    id.remove();
+                }
+                if let Some(id) = st.syntax_source.borrow_mut().take() {
+                    id.remove();
+                }
+                st.suppress_change.set(true);
+            }
             {
                 let mut st = state.borrow_mut();
                 st.path = doc.path.clone();
@@ -585,20 +654,21 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
             buffer.set_modified(false);
             state.borrow().suppress_change.set(false);
 
-            let t = document_window_title(&doc);
-            window.set_title(Some(&t));
-            title_label.set_text(&t);
+            register_open_note(doc.path.clone(), &window);
+            let title = document_window_title(&doc);
+            window.set_title(Some(&title));
+            title_label.set_text(&title);
             text_view.grab_focus();
             show_status(
                 &format!(
                     "Opened {}",
-                    doc.path
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("note")
+                    doc.path.file_name().and_then(|name| name.to_str()).unwrap_or("note")
                 ),
                 false,
             );
+            if let Some(refresh) = refresh_slot.borrow().as_ref().cloned() {
+                glib::idle_add_local_once(move || refresh());
+            }
         })
     };
 
@@ -690,79 +760,253 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
     }
 
     let note_paths: Rc<RefCell<Vec<PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
+    let library_paths: Rc<RefCell<Vec<PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
+    let note_index: Rc<RefCell<Vec<NoteListItem>>> = Rc::new(RefCell::new(Vec::new()));
 
-    let populate_search = {
-        let search_list = search_list.clone();
-        let note_paths = Rc::clone(&note_paths);
-        let search_entry = search_entry.clone();
-        Rc::new(move || {
-            while let Some(child) = search_list.first_child() {
-                search_list.remove(&child);
+    let on_pin: Rc<dyn Fn(PathBuf)> = {
+        let note_index = Rc::clone(&note_index);
+        let state = Rc::clone(&state);
+        let do_save = Rc::clone(&do_save);
+        let show_status = Rc::clone(&show_status);
+        let refresh_weak = Rc::downgrade(&refresh_slot);
+        Rc::new(move |path: PathBuf| {
+            let Some(pinned) = note_index.borrow().iter()
+                .find(|item| item.path == path)
+                .map(|item| item.pinned) else {
+                return;
+            };
+            let current = state.borrow().path == path;
+            if current && state.borrow().dirty.get() && !do_save() {
+                return;
             }
-            note_paths.borrow_mut().clear();
-            let filter = search_entry.text().to_ascii_lowercase();
-            let items = storage::list_notes().unwrap_or_default();
-            for item in items {
-                if !filter.is_empty() && !item.label.to_ascii_lowercase().contains(&filter) {
-                    continue;
+            match storage::set_note_pinned(&path, !pinned) {
+                Ok(fm) => {
+                    if current {
+                        state.borrow_mut().frontmatter = fm;
+                    }
+                    show_status(if pinned { "Unpinned" } else { "Pinned" }, false);
+                    if let Some(slot) = refresh_weak.upgrade() {
+                        if let Some(refresh) = slot.borrow().as_ref().cloned() {
+                            glib::idle_add_local_once(move || refresh());
+                        }
+                    }
                 }
-                let row = gtk::ListBoxRow::new();
-                let label = gtk::Label::new(Some(&item.label));
-                label.set_xalign(0.0);
-                label.set_margin_start(8);
-                label.set_margin_end(8);
-                label.set_margin_top(6);
-                label.set_margin_bottom(6);
-                row.set_child(Some(&label));
-                search_list.append(&row);
-                note_paths.borrow_mut().push(item.path);
+                Err(error) => show_status(&format!("Pin failed: {error}"), true),
             }
         })
     };
 
+    let on_rename: Rc<dyn Fn(PathBuf)> = {
+        let window = window.clone();
+        let state = Rc::clone(&state);
+        let do_save = Rc::clone(&do_save);
+        let title_label = title_label.clone();
+        let show_status = Rc::clone(&show_status);
+        let refresh_weak = Rc::downgrade(&refresh_slot);
+        Rc::new(move |path: PathBuf| {
+            if !is_managed_path(&path) {
+                show_status("Only saved DopePad notes can be renamed", false);
+                return;
+            }
+            let doc = match storage::load_note(&path) {
+                Ok(doc) => doc,
+                Err(error) => {
+                    show_status(&format!("Open failed: {error}"), true);
+                    return;
+                }
+            };
+            let dialog = adw::AlertDialog::new(Some("Rename note"), Some("Enter a title for this note."));
+            dialog.add_response("cancel", "Cancel");
+            dialog.add_response("save", "Save");
+            dialog.set_default_response(Some("save"));
+            dialog.set_close_response("cancel");
+            dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+            let entry = gtk::Entry::new();
+            entry.set_max_length(120);
+            entry.set_text(doc.frontmatter.title.as_deref().unwrap_or(""));
+            entry.set_placeholder_text(Some("Note title"));
+            dialog.set_extra_child(Some(&entry));
+
+            let state = Rc::clone(&state);
+            let do_save = Rc::clone(&do_save);
+            let window = window.clone();
+            let present_window = window.clone();
+            let title_label = title_label.clone();
+            let show_status = Rc::clone(&show_status);
+            let refresh_weak = refresh_weak.clone();
+            dialog.connect_response(Some("save"), move |_, _| {
+                let current = state.borrow().path == path;
+                if current && state.borrow().dirty.get() && !do_save() {
+                    return;
+                }
+                match storage::rename_note(&path, entry.text().as_str()) {
+                    Ok(fm) => {
+                        if current {
+                            state.borrow_mut().frontmatter = fm;
+                            if let Ok(doc) = storage::load_note(&path) {
+                                let title = document_window_title(&doc);
+                                window.set_title(Some(&title));
+                                title_label.set_text(&title);
+                            }
+                        }
+                        show_status("Renamed", false);
+                        if let Some(slot) = refresh_weak.upgrade() {
+                            if let Some(refresh) = slot.borrow().as_ref().cloned() {
+                                glib::idle_add_local_once(move || refresh());
+                            }
+                        }
+                    }
+                    Err(error) => show_status(&format!("Rename failed: {error}"), true),
+                }
+            });
+            dialog.present(Some(&present_window));
+        })
+    };
+
+    let populate_search: Rc<dyn Fn()> = {
+        let search_list = search_list.clone();
+        let note_paths = Rc::clone(&note_paths);
+        let search_entry = search_entry.clone();
+        let note_index = Rc::clone(&note_index);
+        let on_pin = Rc::clone(&on_pin);
+        let on_rename = Rc::clone(&on_rename);
+        Rc::new(move || {
+            let filter = search_entry.text().trim().to_lowercase();
+            let items: Vec<_> = note_index.borrow().iter()
+                .filter(|item| {
+                    filter.is_empty()
+                        || item.label.to_lowercase().contains(&filter)
+                        || item.search_content.contains(&filter)
+                })
+                .map(|item| {
+                    let mut result = item.clone();
+                    if !filter.is_empty() {
+                        if let Some(line) = item.body.lines().find(|line| line.to_lowercase().contains(&filter)) {
+                            result.preview = line.trim().chars().take(120).collect();
+                        }
+                    }
+                    result
+                })
+                .collect();
+            fill_note_list(&search_list, &note_paths, &items, false, &on_pin, &on_rename);
+        })
+    };
+
+    let populate_library: Rc<dyn Fn()> = {
+        let library_list = library_list.clone();
+        let library_paths = Rc::clone(&library_paths);
+        let note_index = Rc::clone(&note_index);
+        let on_pin = Rc::clone(&on_pin);
+        let on_rename = Rc::clone(&on_rename);
+        Rc::new(move || {
+            fill_note_list(&library_list, &library_paths, &note_index.borrow(), true, &on_pin, &on_rename);
+        })
+    };
+
+    let refresh_index: Rc<dyn Fn()> = {
+        let note_index = Rc::clone(&note_index);
+        let populate_search = Rc::clone(&populate_search);
+        let populate_library = Rc::clone(&populate_library);
+        let show_status = Rc::clone(&show_status);
+        Rc::new(move || match storage::list_notes() {
+            Ok(items) => {
+                *note_index.borrow_mut() = items;
+                populate_search();
+                populate_library();
+            }
+            Err(error) => show_status(&format!("Notes failed: {error}"), true),
+        })
+    };
+    *refresh_slot.borrow_mut() = Some(Rc::clone(&refresh_index));
+
     let close_search = {
         let search_overlay_box = search_overlay_box.clone();
+        let search_clamp = search_clamp.clone();
         let text_view = text_view.clone();
         Rc::new(move || {
             search_overlay_box.set_visible(false);
+            search_clamp.set_visible(false);
             text_view.grab_focus();
         })
     };
 
     let open_search = {
         let search_overlay_box = search_overlay_box.clone();
+        let search_clamp = search_clamp.clone();
         let search_entry = search_entry.clone();
-        let populate_search = Rc::clone(&populate_search);
+        let refresh_index = Rc::clone(&refresh_index);
         let reveal_header = Rc::clone(&reveal_header);
         Rc::new(move || {
             reveal_header(true);
-            populate_search();
+            refresh_index();
             search_overlay_box.set_visible(true);
+            search_clamp.set_visible(true);
             search_entry.grab_focus();
         })
     };
 
+    let toggle_library = {
+        let library_revealer = library_revealer.clone();
+        let refresh_index = Rc::clone(&refresh_index);
+        Rc::new(move || {
+            let show = !library_revealer.reveals_child();
+            if show {
+                refresh_index();
+            }
+            library_revealer.set_reveal_child(show);
+        })
+    };
+
+    let close_library = {
+        let library_revealer = library_revealer.clone();
+        let text_view = text_view.clone();
+        Rc::new(move || {
+            library_revealer.set_reveal_child(false);
+            text_view.grab_focus();
+        })
+    };
+    library_close.connect_clicked({
+        let close_library = Rc::clone(&close_library);
+        move |_| close_library()
+    });
     {
-        let populate_search = Rc::clone(&populate_search);
-        search_entry.connect_changed(move |_| {
-            populate_search();
+        let source: Rc<RefCell<Option<SourceId>>> = Rc::new(RefCell::new(None));
+        search_entry.connect_changed({
+            let populate_search = Rc::clone(&populate_search);
+            let source = Rc::clone(&source);
+            move |_| {
+                if let Some(id) = source.borrow_mut().take() {
+                    id.remove();
+                }
+                let populate_search = Rc::clone(&populate_search);
+                let source_for_timeout = Rc::clone(&source);
+                let id = glib::timeout_add_local_once(Duration::from_millis(90), move || {
+                    populate_search();
+                    source_for_timeout.borrow_mut().take();
+                });
+                *source.borrow_mut() = Some(id);
+            }
         });
     }
 
-    {
+    for (list, paths, close_after_open) in [
+        (search_list.clone(), Rc::clone(&note_paths), true),
+        (library_list.clone(), Rc::clone(&library_paths), false),
+    ] {
         let load_document = Rc::clone(&load_document);
-        let note_paths = Rc::clone(&note_paths);
         let close_search = Rc::clone(&close_search);
         let show_status = Rc::clone(&show_status);
-        search_list.connect_row_activated(move |_, row| {
-            let idx = row.index() as usize;
-            if let Some(path) = note_paths.borrow().get(idx).cloned() {
+        list.connect_row_activated(move |_, row| {
+            let index = row.index() as usize;
+            if let Some(path) = paths.borrow().get(index).cloned() {
                 match storage::load_note(&path) {
                     Ok(doc) => {
                         load_document(doc);
-                        close_search();
+                        if close_after_open {
+                            close_search();
+                        }
                     }
-                    Err(e) => show_status(&format!("Open failed: {e}"), true),
+                    Err(error) => show_status(&format!("Open failed: {error}"), true),
                 }
             }
         });
@@ -858,11 +1102,20 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
     });
     btn_save.connect_clicked({
         let do_save = Rc::clone(&do_save);
-        move |_| do_save()
+        move |_| { do_save(); }
     });
     btn_search.connect_clicked({
         let open_search = Rc::clone(&open_search);
         move |_| open_search()
+    });
+    btn_library.connect_clicked({
+        let toggle_library = Rc::clone(&toggle_library);
+        move |_| toggle_library()
+    });
+    btn_rename.connect_clicked({
+        let on_rename = Rc::clone(&on_rename);
+        let state = Rc::clone(&state);
+        move |_| on_rename(state.borrow().path.clone())
     });
 
     {
@@ -871,6 +1124,11 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
         let open_daily = Rc::clone(&open_daily);
         let open_search = Rc::clone(&open_search);
         let open_find = Rc::clone(&open_find);
+        let toggle_library = Rc::clone(&toggle_library);
+        let close_library = Rc::clone(&close_library);
+        let on_rename = Rc::clone(&on_rename);
+        let editor_state = Rc::clone(&state);
+        let library_revealer = library_revealer.clone();
         let close_search = Rc::clone(&close_search);
         let close_find = Rc::clone(&close_find);
         let reveal_header = Rc::clone(&reveal_header);
@@ -903,6 +1161,14 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
                 open_search();
                 return glib::Propagation::Stop;
             }
+            if ctrl && keyval == Key::b {
+                toggle_library();
+                return glib::Propagation::Stop;
+            }
+            if ctrl && keyval == Key::r {
+                on_rename(editor_state.borrow().path.clone());
+                return glib::Propagation::Stop;
+            }
             if ctrl && keyval == Key::f {
                 open_find();
                 return glib::Propagation::Stop;
@@ -918,6 +1184,10 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
                 }
                 if find_bar.is_visible() {
                     close_find();
+                    return glib::Propagation::Stop;
+                }
+                if library_revealer.reveals_child() {
+                    close_library();
                     return glib::Propagation::Stop;
                 }
             }
@@ -958,6 +1228,69 @@ fn populate_editor(window: adw::ApplicationWindow, doc: NoteDocument, as_spare: 
         window.present();
         text_view.grab_focus();
     }
+}
+
+/// Both search and the library use the same row rendering and path mapping.
+fn fill_note_list(
+    list: &gtk::ListBox,
+    paths: &Rc<RefCell<Vec<PathBuf>>>,
+    items: &[NoteListItem],
+    show_actions: bool,
+    on_pin: &Rc<dyn Fn(PathBuf)>,
+    on_rename: &Rc<dyn Fn(PathBuf)>,
+) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    paths.borrow_mut().clear();
+
+    for item in items {
+        let row = gtk::ListBoxRow::new();
+        let content = gtk::Box::new(Orientation::Vertical, 5);
+
+        let title = gtk::Label::new(Some(&item.label));
+        title.add_css_class("dopepad-note-title");
+        title.set_xalign(0.0);
+        title.set_ellipsize(pango::EllipsizeMode::End);
+        title.set_max_width_chars(32);
+        if item.pinned {
+            title.set_tooltip_text(Some("Pinned note"));
+        }
+        content.append(&title);
+        if !item.preview.is_empty() {
+            let preview = gtk::Label::new(Some(&item.preview));
+            preview.add_css_class("dopepad-note-preview");
+            preview.set_xalign(0.0);
+            preview.set_ellipsize(pango::EllipsizeMode::End);
+            preview.set_max_width_chars(38);
+            content.append(&preview);
+        }
+        if show_actions {
+            let actions = gtk::Box::new(Orientation::Horizontal, 6);
+            actions.add_css_class("dopepad-note-actions");
+            let pin = gtk::Button::with_label(if item.pinned { "Unpin" } else { "Pin" });
+            pin.add_css_class("flat");
+            pin.set_tooltip_text(Some("Toggle pin"));
+            let rename = gtk::Button::with_label("Rename");
+            rename.add_css_class("flat");
+            let pin_path = item.path.clone();
+            let rename_path = item.path.clone();
+            let on_pin = Rc::clone(on_pin);
+            let on_rename = Rc::clone(on_rename);
+            pin.connect_clicked(move |_| on_pin(pin_path.clone()));
+            rename.connect_clicked(move |_| on_rename(rename_path.clone()));
+            actions.append(&pin);
+            actions.append(&rename);
+            content.append(&actions);
+        }
+        row.set_child(Some(&content));
+        list.append(&row);
+        paths.borrow_mut().push(item.path.clone());
+    }
+}
+
+fn is_managed_path(path: &Path) -> bool {
+    storage::path_suggests_managed(path)
 }
 
 fn buffer_text(buffer: &TextBuffer) -> String {

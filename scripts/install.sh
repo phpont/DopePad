@@ -78,7 +78,7 @@ pick_posix_profile() {
 
 install_binary() {
   echo "Building release binary…"
-  (cd "$ROOT" && cargo install --path . --force)
+  (cd "$ROOT" && cargo install --locked --path . --force)
 
   mkdir -p "$BIN_DIR"
 
