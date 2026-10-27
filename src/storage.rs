@@ -135,6 +135,7 @@ pub struct NoteListItem {
     pub pinned: bool,
     pub preview: String,
     pub search_content: String,
+    pub body: String,
 }
 
 pub fn notes_dir() -> Result<PathBuf> {
@@ -537,6 +538,7 @@ pub fn list_notes() -> Result<Vec<NoteListItem>> {
             pinned: doc.frontmatter.pinned,
             preview,
             search_content: body.to_lowercase(),
+            body: body.to_owned(),
         });
     }
     items.sort_by(|a, b| b.pinned.cmp(&a.pinned).then_with(|| b.mtime.cmp(&a.mtime)));
@@ -841,6 +843,44 @@ mod tests {
         let text = "plain note without fm\n";
         let out = touch_updated_at(text, sample_dt()).unwrap();
         assert_eq!(out, text);
+    }
+
+    #[test]
+    fn metadata_roundtrip_preserves_legacy_note_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note_legacy.dpad");
+        fs::write(&path, note_template(sample_dt()) + "Café e código\\n").unwrap();
+
+        let before = load_note(&path).unwrap();
+        assert_eq!(before.frontmatter.title, None);
+        assert!(!before.frontmatter.pinned);
+        let body = before.body().to_owned();
+
+        rename_note(&path, "Projeto: café").unwrap();
+        set_note_pinned(&path, true).unwrap();
+        let after = load_note(&path).unwrap();
+        assert_eq!(after.frontmatter.title.as_deref(), Some("Projeto: café"));
+        assert!(after.frontmatter.pinned);
+        assert_eq!(after.body(), body);
+        assert!(fs::read_to_string(&path).unwrap().contains("pinned: true"));
+
+        set_note_pinned(&path, false).unwrap();
+        rename_note(&path, "").unwrap();
+        let reset = load_note(&path).unwrap();
+        assert!(!reset.frontmatter.pinned);
+        assert_eq!(reset.frontmatter.title, None);
+        assert_eq!(reset.body(), body);
+    }
+
+    #[test]
+    fn rename_rejects_multiline_or_excessive_titles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note_input.dpad");
+        fs::write(&path, note_template(sample_dt())).unwrap();
+        assert!(rename_note(&path, "bad\\nnew line").is_err());
+        assert!(rename_note(&path, &"x".repeat(121)).is_err());
+        let unchanged = load_note(&path).unwrap();
+        assert_eq!(unchanged.frontmatter.title, None);
     }
 
     #[test]
